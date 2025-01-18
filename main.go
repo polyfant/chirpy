@@ -1,6 +1,7 @@
 package main
 
 import (
+	 _ "github.com/lib/pq"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -30,11 +31,11 @@ type ValidResponse struct {
 }
 
 func getDatabaseConnectionString() string {
-	connStr := os.Getenv("DATABASE_URL")
+	connStr := os.Getenv("DB_URL")
 	if connStr == "" {
 		// Fallback to default connection string if not set
 		connStr = "postgres://postgres:postgres@localhost:5432/chirpy"
-		log.Println("DATABASE_URL not set, using default connection string")
+		log.Println("DB_URL not set, using default connection string")
 	}
 	return connStr
 }
