@@ -125,6 +125,9 @@ Cargo.lock
 *.pem
 *.key
 
+# Local environment files (uncomment to ignore)
+.env # for local development
+
 # Backup files
 *.bak
 *.gho
