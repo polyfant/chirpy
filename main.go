@@ -77,13 +77,58 @@ func main() {
 	fileServerHandler := http.FileServer(http.Dir(filepathRoot))
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", fileServerHandler)))
 	
-	
-	mux.HandleFunc("GET /api/healthz", handlerReadiness)
-	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
-    mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
-	
-	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
-	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
+	// API routes
+	mux.HandleFunc("/api/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			handlerReadiness(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	mux.HandleFunc("/api/users", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			apiCfg.handlerCreateUser(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	mux.HandleFunc("/api/chirps", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			apiCfg.handlerListChirps(w, r)
+		case http.MethodPost:
+			apiCfg.handlerCreateChirp(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
+	// Handle /api/chirps/{id} pattern
+	mux.HandleFunc("/api/chirps/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			apiCfg.handlerGetChirp(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	mux.HandleFunc("/admin/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			apiCfg.handlerMetrics(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
+
+	mux.HandleFunc("/admin/reset", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			apiCfg.handlerReset(w, r)
+		} else {
+			http.NotFound(w, r)
+		}
+	})
 
 	srv := &http.Server{
 		Addr:    "0.0.0.0:" + port,
@@ -94,7 +139,7 @@ func main() {
 	log.Fatal(srv.ListenAndServe())
 }
 
-func handlerReadiness(w http.ResponseWriter, r *http.Request) {
+func handlerReadiness(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
@@ -109,7 +154,7 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 }
 
 // handlerMetrics returns the metrics page as HTML
-func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	htmlTemplate := `<html>
@@ -169,6 +214,94 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 
     respondWithJSON(w, http.StatusCreated, user)
 }
+// handlerListChirps handles GET /api/chirps and returns all chirps ordered by created_at ascending
+// handlerGetChirp handles GET /api/chirps/{chirpID} and returns a single chirp by ID
+func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
+    log.Printf("=== handlerGetChirp called ===")
+    log.Printf("Request URL: %s", r.URL.String())
+    log.Printf("Method: %s", r.Method)
+    
+    // Extract the chirp ID from the URL path
+    path := r.URL.Path
+    log.Printf("Full path: %s", path)
+    
+    // Ensure the path starts with /api/chirps/
+    if !strings.HasPrefix(path, "/api/chirps/") {
+        log.Printf("Path doesn't start with /api/chirps/")
+        http.NotFound(w, r)
+        return
+    }
+    
+    idStr := path[len("/api/chirps/"):]
+    log.Printf("Extracted ID string: '%s'", idStr)
+    
+    // Remove any trailing slashes
+    idStr = strings.TrimSuffix(idStr, "/")
+    log.Printf("After trimming slashes: '%s'", idStr)
+    
+    // Ensure the ID is not empty
+    if idStr == "" {
+        log.Println("No ID provided, listing all chirps")
+        // If no ID is provided, list all chirps (forward to the list handler)
+        cfg.handlerListChirps(w, r)
+        return
+    }
+    
+    log.Printf("Attempting to parse UUID: %s", idStr)
+    chirpID, err := uuid.Parse(idStr)
+    if err != nil {
+        log.Printf("Failed to parse UUID: %v", err)
+        respondWithError(w, http.StatusBadRequest, "Invalid chirp ID")
+        return
+    }
+    
+    log.Printf("Looking up chirp with UUID: %s", chirpID)
+
+    dbChirp, err := cfg.db.GetChirp(r.Context(), chirpID)
+    if err != nil {
+        log.Printf("Database error when looking up chirp %s: %v", chirpID, err)
+        if err == sql.ErrNoRows {
+            respondWithError(w, http.StatusNotFound, "Chirp not found")
+        } else {
+            respondWithError(w, http.StatusInternalServerError, "Error retrieving chirp")
+        }
+        return
+    }
+    log.Printf("Successfully retrieved chirp: %+v", dbChirp)
+
+    // Convert database chirp to API chirp
+    chirp := Chirp{
+        ID:        dbChirp.ID,
+        CreatedAt: dbChirp.CreatedAt,
+        UpdatedAt: dbChirp.UpdatedAt,
+        Body:      dbChirp.Body,
+        UserID:    dbChirp.UserID,
+    }
+
+    respondWithJSON(w, http.StatusOK, chirp)
+}
+
+// handlerListChirps handles GET /api/chirps and returns all chirps ordered by created_at ascending
+func (cfg *apiConfig) handlerListChirps(w http.ResponseWriter, r *http.Request) {
+    chirps, err := cfg.db.ListChirps(r.Context())
+    if err != nil {
+        respondWithError(w, http.StatusInternalServerError, "Couldn't fetch chirps")
+        return
+    }
+    // Convert []database.Chirp to []Chirp for API response
+    apiChirps := make([]Chirp, len(chirps))
+    for i, c := range chirps {
+        apiChirps[i] = Chirp{
+            ID:        c.ID,
+            CreatedAt: c.CreatedAt,
+            UpdatedAt: c.UpdatedAt,
+            Body:      c.Body,
+            UserID:    c.UserID,
+        }
+    }
+    respondWithJSON(w, http.StatusOK, apiChirps)
+}
+
 func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
     decoder := json.NewDecoder(r.Body)
     params := createChirpRequest{}
@@ -218,19 +351,4 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
     w.Header().Set("Content-Type", "application/json")
     w.WriteHeader(code)
     w.Write(response)
-}
-
-func cleanProfanity(body string) string {
-    profaneWords := map[string]bool{
-        "kerfuffle": true,
-        "sharbert":  true,
-        "fornax":    true,
-    }
-    words := strings.Fields(body)
-    for i, word := range words {
-        if profaneWords[strings.ToLower(word)] {
-            words[i] = "****"
-        }
-    }
-    return strings.Join(words, " ")
 }
